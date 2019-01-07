@@ -48,7 +48,7 @@ public class SignatureVerification
         }
       }
 
-      if (validSignatures.size() > 1) {
+      if (validSignatures.size() > 0) {
         return true;
       }
 
