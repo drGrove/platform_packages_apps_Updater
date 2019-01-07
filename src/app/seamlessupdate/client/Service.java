@@ -50,8 +50,10 @@ public class Service extends IntentService {
     private static final int READ_TIMEOUT = 60000;
     private static final File CARE_MAP_PATH = new File("/data/ota_package/care_map.txt");
     static final File UPDATE_PATH = new File("/data/ota_package/update.zip");
+    static final File UPDATE_SIGNATURE_PATH = new File("/data/ota_package/update.zip.asc");
     private static final String PREFERENCE_CHANNEL = "channel";
     private static final String PREFERENCE_DOWNLOAD_FILE = "download_file";
+    private static final String PREFERENCE_DOWNLOAD_SIG_FILE = "download_file_sig";
     private static final int HTTP_RANGE_NOT_SATISFIABLE = 416;
 
     private boolean mUpdating = false;
@@ -91,6 +93,7 @@ public class Service extends IntentService {
                     mUpdating = false;
                 }
                 UPDATE_PATH.delete();
+                UPDATE_SIGNATURE_PATH.delete();
                 monitor.countDown();
             }
         });
@@ -101,6 +104,7 @@ public class Service extends IntentService {
             engine.applyPayload(getString(R.string.url) + downloadFile, payloadOffset, 0, headerKeyValuePairs);
         } else {
             UPDATE_PATH.setReadable(true, false);
+            UPDATE_SIGNATURE_PATH.setReadable(true, false);
             engine.applyPayload("file://" + UPDATE_PATH, payloadOffset, 0, headerKeyValuePairs);
         }
         try {
@@ -172,6 +176,10 @@ public class Service extends IntentService {
             }
             if (sourceFingerprint != null && !sourceFingerprint.equals(FINGERPRINT)) {
                 throw new GeneralSecurityException("source fingerprint mismatch");
+            }
+
+            if (!SignatureVerification.verifiySignatures()) {
+              throw new GeneralSecurityException("invalid number of required signatures");
             }
 
             if (!isAbUpdate()) {
@@ -261,6 +269,7 @@ public class Service extends IntentService {
 
             Log.d(TAG, "fetching metadata for " + DEVICE + "-" + channel);
             InputStream input = fetchData(DEVICE + "-" + channel).getInputStream();
+            InputSteam sigInput;
             final BufferedReader reader = new BufferedReader(new InputStreamReader(input));
             final String[] metadata = reader.readLine().split(" ");
             reader.close();
@@ -275,16 +284,23 @@ public class Service extends IntentService {
             }
 
             String downloadFile = preferences.getString(PREFERENCE_DOWNLOAD_FILE, null);
+            String downloadSigFile = preferences.getString(PREFERENCE_DOWNLOAD_SIG_FILE, null);
             long downloaded = UPDATE_PATH.length();
+            long sigDownloaded = UPDATE_SIG_PATH.length();
 
             final String incrementalUpdate = DEVICE + "-incremental-" + INCREMENTAL + "-" + targetIncremental + ".zip";
+            final String incrementalUpdateSig = incrementalUpdate  ".asc";
             final String fullUpdate = DEVICE + "-ota_update-" + targetIncremental + ".zip";
+            final String fullUpdateSig = fullUpdate + ".asc";
 
             if (incrementalUpdate.equals(downloadFile) || fullUpdate.equals(downloadFile)) {
                 Log.d(TAG, "resume fetch of " + downloadFile + " from " + downloaded + " bytes");
                 final HttpURLConnection connection = (HttpURLConnection) fetchData(downloadFile);
+                final HttpURLConnection sigConnection = (HttpURLConnection) fetchData(downloadSigFile);
                 connection.setRequestProperty("Range", "bytes=" + downloaded + "-");
-                if (connection.getResponseCode() == HTTP_RANGE_NOT_SATISFIABLE) {
+                sigConnection.setRequestProperty("Range", "bytes=" + sigDownloaded + "-");
+                if (connection.getResponseCode() == HTTP_RANGE_NOT_SATISFIABLE &&
+                    sigConnection.getResponseCode() == HTTP_RANGE_NOT_SATISFIABLE) {
                     Log.d(TAG, "download completed previously");
                     onDownloadFinished(targetBuildDate, channel);
                     return;
@@ -295,17 +311,23 @@ public class Service extends IntentService {
                     Log.d(TAG, "fetch incremental " + incrementalUpdate);
                     downloadFile = incrementalUpdate;
                     input = fetchData(downloadFile).getInputStream();
+                    sigInput = fetchData(downloadSigFile).getInputStream();
                 } catch (IOException e) {
                     Log.d(TAG, "incremental not found, fetch full update " + fullUpdate);
                     downloadFile = fullUpdate;
                     input = fetchData(downloadFile).getInputStream();
+                    sigInput = fetchData(downloadSigFile).getInputStream();
                 }
                 downloaded = 0;
+                sigDownloaded = 0;
                 Files.deleteIfExists(UPDATE_PATH.toPath());
+                Files.deleteIfExists(UPDATE_SIG_PATH.toPath());
             }
 
             final OutputStream output = new FileOutputStream(UPDATE_PATH, downloaded != 0);
+            final OutputStream sigOutput = new FileOutputStream(UPDATE_PATH, downloaded != 0);
             preferences.edit().putString(PREFERENCE_DOWNLOAD_FILE, downloadFile).commit();
+            preferences.edit().putString(PREFERENCE_DOWNLOAD_SIG_FILE, downloadSigFile).commit();
 
             int bytesRead;
             long last = System.nanoTime();
@@ -315,12 +337,27 @@ public class Service extends IntentService {
                 downloaded += bytesRead;
                 final long now = System.nanoTime();
                 if (now - last > 1000 * 1000 * 1000) {
-                    Log.d(TAG, "downloaded " + downloaded + " bytes");
+                    Log.d(TAG, "Update: downloaded " + downloaded + " bytes");
                     last = now;
                 }
             }
             output.close();
             input.close();
+
+            int sigBytesRead;
+            long siglast = System.nanoTime();
+            final byte[] sigBuffer = new byte[8192];
+            while ((bytesRead = sigInput.read(sigBuffer)) != -1) {
+                sigOutput.write(sigBuffer, 0, sigBytesRead);
+                sigDownloaded += sigBytesRead;
+                final long now = System.nanoTime();
+                if (now - last > 1000 * 1000 * 1000) {
+                    Log.d(TAG, "Sig: downloaded " + sigDownloaded + " bytes");
+                    last = now;
+                }
+            }
+            sigOutput.close();
+            sigInput.close();
 
             Log.d(TAG, "download completed");
             onDownloadFinished(targetBuildDate, channel);
