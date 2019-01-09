@@ -1,4 +1,4 @@
-package app.seamlessupdate.client;
+package sh.hashbang.updater;
 
 import android.support.v4.content.WakefulBroadcastReceiver;
 import android.content.Context;

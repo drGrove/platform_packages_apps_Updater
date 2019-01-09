@@ -1,4 +1,4 @@
-package app.seamlessupdate.client;
+package sh.hashbang.updater;
 
 import java.io.IOException;
 import java.io.InputStream;

@@ -1,4 +1,4 @@
-package app.seamlessupdate.client;
+package sh.hashbang.updater;
 
 import static android.os.Build.DEVICE;
 import static android.os.Build.FINGERPRINT;

@@ -1,4 +1,4 @@
-package app.seamlessupdate.client;
+package sh.hashbang.updater;
 
 import android.app.job.JobInfo;
 import android.content.Context;
